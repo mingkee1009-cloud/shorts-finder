@@ -506,10 +506,14 @@ export default function App() {
   )
 }
 
+const ResultsWrap = styled.div`
+  animation: ${fadeIn} .4s ease;
+`
+
 // ── Results ───────────────────────────────────────────────────────
 function Results({ result }) {
   return (
-    <div style={{ animation: `${fadeIn} .4s ease` }}>
+    <ResultsWrap>
       {/* Shorts 정보 */}
       <MetaCard>
         <MetaInfo>
@@ -590,7 +594,7 @@ function Results({ result }) {
           ))}
         </CandidateGrid>
       )}
-    </div>
+    </ResultsWrap>
   )
 }
 
