@@ -613,4 +613,10 @@ function ApiGuide() {
         <li>API 및 서비스 → 라이브러리 → <b style={{ color: 'var(--text)' }}>YouTube Data API v3</b> 검색 후 사용 설정</li>
         <li>사용자 인증 정보 → API 키 생성</li>
         <li>생성된 키를 위 입력란에 붙여넣기 (자동 저장됩니다)</li>
-      <
+      </ol>
+      <p style={{ marginTop: 12, fontSize: 12, color: '#555' }}>
+        ※ API 키는 브라우저 로컬 스토리지에만 저장되며 서버로 전송됩니다 (분석 요청 시에만 사용).
+      </p>
+    </Card>
+  )
+}
