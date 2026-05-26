@@ -22,6 +22,9 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+from fastapi.responses import JSONResponse
+import traceback
+
 app = FastAPI(title="Shorts Finder API", version="1.0.0")
 
 app.add_middleware(
@@ -31,6 +34,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    tb = traceback.format_exc()
+    logger.error(f"Unhandled exception on {request.url}: {tb}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"{type(exc).__name__}: {str(exc)}"}
+    )
 
 # ─────────────────────────────────────────────
 # 요청/응답 모델
@@ -460,13 +472,4 @@ async def analyze_shorts(req: AnalyzeRequest):
             ))
 
     # 8. 점수 + 매칭 키워드 수로 정렬
-    scored.sort(key=lambda x: (x.score, len(x.matched_keywords)), reverse=True)
-    top_candidates = scored[:req.max_candidates]
-
-    search_strategy = "Search API + 업로드 목록 병합" if playlist_videos else "Search API"
-
-    return AnalyzeResponse(
-        shorts_id=shorts_id,
-        shorts_title=shorts_title,
-        shorts_channel=channel_title,
-        shorts_channel_id
+    scored.sort(key=la
