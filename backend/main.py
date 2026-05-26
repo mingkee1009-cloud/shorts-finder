@@ -218,36 +218,53 @@ BASE_URL = "https://www.googleapis.com/youtube/v3"
 
 async def get_video_info(video_id: str, api_key: str) -> dict:
     """영상 메타데이터 조회 (제목, 설명, 태그, 채널 ID)"""
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(
-            f"{BASE_URL}/videos",
-            params={
-                "id": video_id,
-                "part": "snippet,contentDetails",
-                "key": api_key,
-            }
-        )
-        resp.raise_for_status()
-        data = resp.json()
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{BASE_URL}/videos",
+                params={
+                    "id": video_id,
+                    "part": "snippet,contentDetails",
+                    "key": api_key,
+                }
+            )
+            if resp.status_code == 400:
+                err = resp.json().get('error', {}).get('message', 'API 키 오류')
+                raise HTTPException(status_code=400, detail=f"YouTube API 오류: {err}")
+            elif resp.status_code == 403:
+                raise HTTPException(status_code=403, detail="YouTube API 키가 유효하지 않거나 할당량이 초과되었습니다")
+            resp.raise_for_status()
+            data = resp.json()
+    except HTTPException:
+        raise
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"YouTube API 응답 오류: {e.response.status_code}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"YouTube API 연결 실패: {str(e)}")
 
     if not data.get('items'):
-        raise HTTPException(status_code=404, detail="영상을 찾을 수 없습니다")
+        raise HTTPException(status_code=404, detail="영상을 찾을 수 없습니다. URL을 확인하세요.")
     return data['items'][0]
 
 
 async def get_channel_uploads_playlist(channel_id: str, api_key: str) -> str:
     """채널의 업로드 재생목록 ID 조회"""
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(
-            f"{BASE_URL}/channels",
-            params={
-                "id": channel_id,
-                "part": "contentDetails",
-                "key": api_key,
-            }
-        )
-        resp.raise_for_status()
-        data = resp.json()
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{BASE_URL}/channels",
+                params={
+                    "id": channel_id,
+                    "part": "contentDetails",
+                    "key": api_key,
+                }
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"채널 정보 조회 실패: {str(e)}")
 
     if not data.get('items'):
         raise HTTPException(status_code=404, detail="채널을 찾을 수 없습니다")
@@ -452,29 +469,4 @@ async def analyze_shorts(req: AnalyzeRequest):
         shorts_id=shorts_id,
         shorts_title=shorts_title,
         shorts_channel=channel_title,
-        shorts_channel_id=channel_id,
-        extracted_keywords=keywords,
-        candidates=top_candidates,
-        total_searched=total_searched,
-        search_strategy=search_strategy,
-    )
-
-
-# ─────────────────────────────────────────────
-# 정적 파일 서빙 (프론트엔드 빌드)
-# ─────────────────────────────────────────────
-
-static_dir = Path(__file__).parent / "static"
-if static_dir.exists():
-    app.mount("/assets", StaticFiles(directory=str(static_dir / "assets")), name="assets")
-
-    @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
-        index = static_dir / "index.html"
-        if index.exists():
-            return FileResponse(str(index))
-        return {"message": "Shorts Finder API"}
-
-@app.get("/api/health")
-async def health():
-    return {"status": "ok", "version": "1.0.0"}
+        shorts_channel_id
