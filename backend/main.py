@@ -241,15 +241,25 @@ async def search_channel_videos(channel_id: str, keywords: list, api_key: str) -
 async def search_global_videos(keywords: list, api_key: str) -> list:
     """쇼츠 채널 외 전체 YouTube에서 키워드로 검색 (원본 채널 탐지용)"""
     results = {}
+    # 앞 5개 + 이름/특이 키워드 (인물명 등) 포함
     top = keywords[:5]
+    # 5위 이후 키워드도 포함 (인물명 등이 뒤에 올 수 있음)
+    extended = keywords[:10]
+
     queries = []
+    # 조합 쿼리
     if len(top) >= 2:
         queries.append(top[0] + " " + top[1])
     if len(top) >= 3:
-        queries.append(top[0] + " " + top[2])
-    if len(top) >= 3:
         queries.append(top[1] + " " + top[2])
-    queries += [kw for kw in top[:2]]
+    if len(top) >= 2:
+        queries.append(top[0] + " " + top[2] if len(top) >= 3 else top[0] + " " + top[1])
+    # 5번째 이후 키워드 + 첫 번째 키워드 조합 (인물명 포함)
+    for kw in extended[5:8]:
+        queries.append(top[0] + " " + kw)
+        queries.append(kw)
+
+    # 중복 제거
     seen_q = set()
     unique_queries = []
     for q in queries:
@@ -258,13 +268,13 @@ async def search_global_videos(keywords: list, api_key: str) -> list:
             unique_queries.append(q)
 
     async with httpx.AsyncClient(timeout=15) as client:
-        for q in unique_queries[:4]:
+        for q in unique_queries[:6]:
             try:
                 resp = await client.get(
                     BASE_URL + "/search",
                     params={"q": q, "part": "snippet",
-                            "type": "video", "videoDuration": "medium", "key": api_key,
-                            "maxResults": 25}
+                            "type": "video", "key": api_key,
+                            "maxResults": 20}
                 )
                 resp.raise_for_status()
                 for item in resp.json().get('items', []):
