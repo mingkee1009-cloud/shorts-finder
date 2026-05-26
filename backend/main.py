@@ -1,6 +1,6 @@
 """
-Shorts Finder Backend - FastAPI
-YouTube Shorts -> 원본 영상 구간 탐지 시스템
+Shorts Finder Backend - FastAPI v2
+YouTube Shorts -> 원본 영상 탐지 (출처 채널 우선 탐색)
 """
 
 from fastapi import FastAPI, HTTPException
@@ -19,7 +19,7 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Shorts Finder API", version="1.0.0")
+app = FastAPI(title="Shorts Finder API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,30 +33,21 @@ app.add_middleware(
 async def global_exception_handler(request, exc):
     tb = traceback.format_exc()
     logger.error("Unhandled exception on %s: %s" % (request.url, tb))
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "%s: %s" % (type(exc).__name__, str(exc))}
-    )
+    return JSONResponse(status_code=500, content={"detail": "%s: %s" % (type(exc).__name__, str(exc))})
 
-# ----------------------------------------
-# 모델
-# ----------------------------------------
 
 class AnalyzeRequest(BaseModel):
     shorts_url: str
     api_key: str
     max_candidates: Optional[int] = 10
 
-# ----------------------------------------
-# 유틸
-# ----------------------------------------
 
 def extract_video_id(url: str) -> Optional[str]:
     patterns = [
-        r'youtube\.com/shorts/([A-Za-z0-9_-]{11})',
-        r'youtube\.com/watch\?v=([A-Za-z0-9_-]{11})',
-        r'youtu\.be/([A-Za-z0-9_-]{11})',
-        r'^([A-Za-z0-9_-]{11})$',
+        r"youtube\.com/shorts/([A-Za-z0-9_-]{11})",
+        r"youtube\.com/watch\?v=([A-Za-z0-9_-]{11})",
+        r"youtu\.be/([A-Za-z0-9_-]{11})",
+        r"^([A-Za-z0-9_-]{11})$",
     ]
     for pattern in patterns:
         m = re.search(pattern, url)
@@ -64,37 +55,62 @@ def extract_video_id(url: str) -> Optional[str]:
             return m.group(1)
     return None
 
+
 STOPWORDS = {
-    '이','가','을','를','의','에','는','은','와','과','로','으로','도','만','에서',
-    '이다','있다','없다','하다','되다','그','것','수','때','더','요','나',
-    'the','a','an','is','are','was','were','in','on','at','to','for','of',
-    'and','or','but','with','shorts','youtube','short',
+    "이","가","을","를","의","에","는","은","와","과","로","으로","도","만","에서",
+    "이다","있다","없다","하다","되다","그","것","수","때","더","요","나",
+    "the","a","an","is","are","was","were","in","on","at","to","for","of",
+    "and","or","but","with","shorts","youtube","short",
 }
+
+
+def extract_source_channels(title: str, description: str, tags: list = None) -> list:
+    """설명/태그에서 출처 채널 힌트 추출 (@채널명, 출처:, 원본: 등)"""
+    mentions = []
+    combined = title + " " + description
+    if tags:
+        combined += " " + " ".join(tags)
+    # @채널명 패턴
+    for m in re.findall(r"@([\w\uAC00-\uD7A3A-Za-z0-9_.-]+)", combined):
+        if len(m) >= 2:
+            mentions.append(m)
+    # 출처/원본 패턴 (한글)
+    for m in re.finditer(r"출처[\s:]+([^\s\n#@]+)", combined):
+        val = m.group(1).strip().rstrip(")")
+        if len(val) >= 2:
+            mentions.append(val)
+    for m in re.finditer(r"원본[\s:]+([^\s\n#@]+)", combined):
+        val = m.group(1).strip().rstrip(")")
+        if len(val) >= 2:
+            mentions.append(val)
+    seen = set()
+    result = []
+    for m in mentions:
+        if m.lower() not in seen:
+            seen.add(m.lower())
+            result.append(m)
+    return result
+
 
 def extract_keywords(title: str, description: str = "", tags: list = None) -> list:
     keywords = []
     all_text = title + " " + description
-
-    for tag in re.findall(r'#([^\s#]+)', all_text):
-        clean = re.sub(r'[^\w가-힣a-zA-Z0-9]', '', tag)
+    for tag in re.findall(r"#([^\s#]+)", all_text):
+        clean = re.sub(r"[^\w\uAC00-\uD7A3a-zA-Z0-9]", "", tag)
         if len(clean) >= 2 and clean.lower() not in STOPWORDS:
             keywords.append(clean)
-
     if tags:
         for tag in tags:
             clean = tag.strip()
             if len(clean) >= 2 and clean.lower() not in STOPWORDS:
                 keywords.append(clean)
-
-    for token in re.sub(r'[^\w가-힣a-zA-Z0-9\s]', ' ', title).split():
+    for token in re.sub(r"[^\w\uAC00-\uD7A3a-zA-Z0-9\s]", " ", title).split():
         if len(token) >= 2 and token.lower() not in STOPWORDS:
             keywords.append(token)
-
     if description:
-        for token in re.sub(r'[^\w가-힣a-zA-Z0-9\s]', ' ', description[:200]).split():
+        for token in re.sub(r"[^\w\uAC00-\uD7A3a-zA-Z0-9\s]", " ", description[:200]).split():
             if len(token) >= 2 and token.lower() not in STOPWORDS:
                 keywords.append(token)
-
     seen = set()
     result = []
     for kw in keywords:
@@ -105,11 +121,10 @@ def extract_keywords(title: str, description: str = "", tags: list = None) -> li
 
 
 def score_video(video: dict, keywords: list) -> tuple:
-    snippet = video.get('snippet', {})
-    v_title = snippet.get('title', '').lower()
-    v_desc = snippet.get('description', '')[:300].lower()
-    v_tags = [t.lower() for t in snippet.get('tags', [])]
-
+    snippet = video.get("snippet", {})
+    v_title = snippet.get("title", "").lower()
+    v_desc = snippet.get("description", "")[:300].lower()
+    v_tags = [t.lower() for t in snippet.get("tags", [])]
     matched = []
     score = 0.0
     for kw in keywords:
@@ -128,7 +143,6 @@ def score_video(video: dict, keywords: list) -> tuple:
             if kl not in matched:
                 matched.append(kw)
         score += ks
-
     if keywords:
         score = score / (len(keywords) * 3.0)
     return min(score, 1.0), matched
@@ -142,11 +156,8 @@ def get_confidence(score: float, matched_count: int) -> str:
     return "LOW"
 
 
-# ----------------------------------------
-# YouTube API 호출
-# ----------------------------------------
-
 BASE_URL = "https://www.googleapis.com/youtube/v3"
+
 
 async def get_video_info(video_id: str, api_key: str) -> dict:
     try:
@@ -158,7 +169,7 @@ async def get_video_info(video_id: str, api_key: str) -> dict:
             if resp.status_code == 403:
                 raise HTTPException(status_code=403, detail="YouTube API 키가 유효하지 않거나 할당량이 초과되었습니다")
             if resp.status_code == 400:
-                msg = resp.json().get('error', {}).get('message', '잘못된 요청')
+                msg = resp.json().get("error", {}).get("message", "잘못된 요청")
                 raise HTTPException(status_code=400, detail="YouTube API 오류: " + msg)
             resp.raise_for_status()
             data = resp.json()
@@ -166,10 +177,9 @@ async def get_video_info(video_id: str, api_key: str) -> dict:
         raise
     except Exception as e:
         raise HTTPException(status_code=502, detail="YouTube API 연결 실패: " + str(e))
-
-    if not data.get('items'):
-        raise HTTPException(status_code=404, detail="영상을 찾을 수 없습니다. URL을 확인하세요.")
-    return data['items'][0]
+    if not data.get("items"):
+        raise HTTPException(status_code=404, detail="영상을 찾을 수 없습니다.")
+    return data["items"][0]
 
 
 async def get_channel_uploads_playlist(channel_id: str, api_key: str) -> str:
@@ -181,14 +191,11 @@ async def get_channel_uploads_playlist(channel_id: str, api_key: str) -> str:
             )
             resp.raise_for_status()
             data = resp.json()
-    except HTTPException:
-        raise
     except Exception as e:
         raise Exception("채널 조회 실패: " + str(e))
-
-    if not data.get('items'):
+    if not data.get("items"):
         raise Exception("채널 없음")
-    return data['items'][0]['contentDetails']['relatedPlaylists']['uploads']
+    return data["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
 
 
 async def get_all_channel_videos(playlist_id: str, api_key: str, max_pages: int = 10) -> list:
@@ -202,15 +209,33 @@ async def get_all_channel_videos(playlist_id: str, api_key: str, max_pages: int 
             resp = await client.get(BASE_URL + "/playlistItems", params=params)
             resp.raise_for_status()
             data = resp.json()
-            for item in data.get('items', []):
-                sn = item.get('snippet', {})
-                vid = sn.get('resourceId', {}).get('videoId')
+            for item in data.get("items", []):
+                sn = item.get("snippet", {})
+                vid = sn.get("resourceId", {}).get("videoId")
                 if vid:
-                    videos.append({'id': vid, 'snippet': sn})
-            page_token = data.get('nextPageToken')
+                    videos.append({"id": vid, "snippet": sn})
+            page_token = data.get("nextPageToken")
             if not page_token:
                 break
     return videos
+
+
+async def find_channel_id_by_name(channel_name: str, api_key: str) -> Optional[str]:
+    """채널명으로 채널 ID 검색"""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                BASE_URL + "/search",
+                params={"q": channel_name, "part": "snippet",
+                        "type": "channel", "maxResults": 3, "key": api_key}
+            )
+            resp.raise_for_status()
+            items = resp.json().get("items", [])
+            if items:
+                return items[0].get("snippet", {}).get("channelId", "")
+    except Exception as e:
+        logger.warning("채널명 검색 실패 (%s): %s" % (channel_name, e))
+    return None
 
 
 async def search_channel_videos(channel_id: str, keywords: list, api_key: str) -> list:
@@ -219,7 +244,6 @@ async def search_channel_videos(channel_id: str, keywords: list, api_key: str) -
     queries = [kw for kw in top[:3]]
     if len(top) >= 2:
         queries.append(top[0] + " " + top[1])
-
     async with httpx.AsyncClient(timeout=15) as client:
         for q in queries:
             try:
@@ -229,66 +253,14 @@ async def search_channel_videos(channel_id: str, keywords: list, api_key: str) -
                             "type": "video", "maxResults": 25, "key": api_key}
                 )
                 resp.raise_for_status()
-                for item in resp.json().get('items', []):
-                    vid = item.get('id', {}).get('videoId')
+                for item in resp.json().get("items", []):
+                    vid = item.get("id", {}).get("videoId")
                     if vid and vid not in results:
-                        results[vid] = {'id': vid, 'snippet': item.get('snippet', {})}
+                        results[vid] = {"id": vid, "snippet": item.get("snippet", {})}
             except Exception as e:
                 logger.warning("채널 검색 실패 (%s): %s" % (q, e))
     return list(results.values())
 
-
-async def search_global_videos(keywords: list, api_key: str) -> list:
-    """쇼츠 채널 외 전체 YouTube에서 키워드로 검색 (원본 채널 탐지용)"""
-    results = {}
-    # 앞 5개 + 이름/특이 키워드 (인물명 등) 포함
-    top = keywords[:5]
-    # 5위 이후 키워드도 포함 (인물명 등이 뒤에 올 수 있음)
-    extended = keywords[:10]
-
-    queries = []
-    # 조합 쿼리
-    if len(top) >= 2:
-        queries.append(top[0] + " " + top[1])
-    if len(top) >= 3:
-        queries.append(top[1] + " " + top[2])
-    if len(top) >= 2:
-        queries.append(top[0] + " " + top[2] if len(top) >= 3 else top[0] + " " + top[1])
-    # 5번째 이후 키워드 + 첫 번째 키워드 조합 (인물명 포함)
-    for kw in extended[5:8]:
-        queries.append(top[0] + " " + kw)
-        queries.append(kw)
-
-    # 중복 제거
-    seen_q = set()
-    unique_queries = []
-    for q in queries:
-        if q not in seen_q:
-            seen_q.add(q)
-            unique_queries.append(q)
-
-    async with httpx.AsyncClient(timeout=15) as client:
-        for q in unique_queries[:6]:
-            try:
-                resp = await client.get(
-                    BASE_URL + "/search",
-                    params={"q": q, "part": "snippet",
-                            "type": "video", "key": api_key,
-                            "maxResults": 20}
-                )
-                resp.raise_for_status()
-                for item in resp.json().get('items', []):
-                    vid = item.get('id', {}).get('videoId')
-                    if vid and vid not in results:
-                        results[vid] = {'id': vid, 'snippet': item.get('snippet', {})}
-            except Exception as e:
-                logger.warning("글로벌 검색 실패 (%s): %s" % (q, e))
-    return list(results.values())
-
-
-# ----------------------------------------
-# 메인 엔드포인트
-# ----------------------------------------
 
 @app.post("/api/analyze")
 async def analyze_shorts(req: AnalyzeRequest):
@@ -298,46 +270,75 @@ async def analyze_shorts(req: AnalyzeRequest):
             raise HTTPException(status_code=400, detail="유효하지 않은 YouTube URL입니다")
 
         logger.info("분석 시작: " + shorts_id)
-
         info = await get_video_info(shorts_id, req.api_key)
-        sn = info.get('snippet', {})
-        channel_id = sn.get('channelId', '')
-        channel_title = sn.get('channelTitle', '')
-        shorts_title = sn.get('title', '')
-        shorts_desc = sn.get('description', '')
-        shorts_tags = sn.get('tags', [])
+        sn = info.get("snippet", {})
+        channel_id = sn.get("channelId", "")
+        channel_title = sn.get("channelTitle", "")
+        shorts_title = sn.get("title", "")
+        shorts_desc = sn.get("description", "")
+        shorts_tags = sn.get("tags", [])
 
         keywords = extract_keywords(shorts_title, shorts_desc, shorts_tags)
         logger.info("키워드: " + str(keywords))
-
         if not keywords:
             raise HTTPException(status_code=400, detail="키워드를 추출할 수 없습니다.")
 
+        # 1단계: 설명에서 출처 채널 힌트 추출
+        source_mentions = extract_source_channels(shorts_title, shorts_desc, shorts_tags)
+        logger.info("출처 힌트: " + str(source_mentions))
+
+        # 2단계: 출처 채널 ID 검색
+        source_channel_ids = []
+        if source_mentions:
+            ch_results = await asyncio.gather(
+                *[find_channel_id_by_name(m, req.api_key) for m in source_mentions[:3]],
+                return_exceptions=True
+            )
+            for ch_id in ch_results:
+                if ch_id and not isinstance(ch_id, Exception) and ch_id not in ("", channel_id):
+                    if ch_id not in source_channel_ids:
+                        source_channel_ids.append(ch_id)
+        logger.info("출처 채널 IDs: " + str(source_channel_ids))
+
+        # 3단계: 출처 채널 업로드 목록 (전체 영상)
+        source_playlist_ids = []
+        if source_channel_ids:
+            pl_results = await asyncio.gather(
+                *[get_channel_uploads_playlist(ch_id, req.api_key) for ch_id in source_channel_ids],
+                return_exceptions=True
+            )
+            for pl_id in pl_results:
+                if pl_id and not isinstance(pl_id, Exception):
+                    source_playlist_ids.append(pl_id)
+
+        # 4단계: 쇼츠 채널 업로드 목록
         uploads_id = None
         try:
             uploads_id = await get_channel_uploads_playlist(channel_id, req.api_key)
         except Exception as e:
             logger.error("업로드 목록 실패: " + str(e))
 
-        # 3가지 전략 병렬 실행: 채널 검색 + 글로벌 검색 + 업로드 목록
-        tasks = [
-            search_channel_videos(channel_id, keywords, req.api_key),
-            search_global_videos(keywords, req.api_key),
-        ]
+        # 5단계: 병렬 검색
+        tasks = []
+        for src_id in source_channel_ids:
+            tasks.append(search_channel_videos(src_id, keywords, req.api_key))
+        for pl_id in source_playlist_ids:
+            tasks.append(get_all_channel_videos(pl_id, req.api_key))
+        tasks.append(search_channel_videos(channel_id, keywords, req.api_key))
         if uploads_id:
             tasks.append(get_all_channel_videos(uploads_id, req.api_key))
 
         gathered = await asyncio.gather(*tasks, return_exceptions=True)
-        search_vids = gathered[0] if not isinstance(gathered[0], Exception) else []
-        global_vids = gathered[1] if not isinstance(gathered[1], Exception) else []
-        playlist_vids = gathered[2] if len(gathered) > 2 and not isinstance(gathered[2], Exception) else []
+        all_vids_list = []
+        for r in gathered:
+            if not isinstance(r, Exception):
+                all_vids_list.extend(r)
+        logger.info("총 수집: %d" % len(all_vids_list))
 
-        logger.info("Channel: %d, Global: %d, Playlist: %d" % (
-            len(search_vids), len(global_vids), len(playlist_vids)))
-
+        # 6단계: 중복 제거 + 점수 계산
         all_videos = {}
-        for v in search_vids + global_vids + playlist_vids:
-            vid = v.get('id') or v.get('snippet', {}).get('resourceId', {}).get('videoId', '')
+        for v in all_vids_list:
+            vid = v.get("id") or v.get("snippet", {}).get("resourceId", {}).get("videoId", "")
             if vid and vid != shorts_id:
                 all_videos[vid] = v
 
@@ -345,32 +346,29 @@ async def analyze_shorts(req: AnalyzeRequest):
         for vid_id, video in all_videos.items():
             score, matched = score_video(video, keywords)
             if score > 0 or matched:
-                sn_v = video.get('snippet', {})
-                thumbs = sn_v.get('thumbnails', {})
-                thumb = (thumbs.get('medium', {}).get('url') or
-                         thumbs.get('default', {}).get('url') or
+                sn_v = video.get("snippet", {})
+                thumbs = sn_v.get("thumbnails", {})
+                thumb = (thumbs.get("medium", {}).get("url") or
+                         thumbs.get("default", {}).get("url") or
                          "https://img.youtube.com/vi/" + vid_id + "/mqdefault.jpg")
                 scored.append({
                     "video_id": vid_id,
-                    "title": sn_v.get('title', ''),
+                    "title": sn_v.get("title", ""),
                     "url": "https://www.youtube.com/watch?v=" + vid_id,
-                    "channel_title": sn_v.get('channelTitle', ''),
-                    "published_at": sn_v.get('publishedAt', '')[:10],
+                    "channel_title": sn_v.get("channelTitle", ""),
+                    "published_at": sn_v.get("publishedAt", "")[:10],
                     "score": round(score, 3),
                     "matched_keywords": matched,
                     "confidence": get_confidence(score, len(matched)),
                     "thumbnail": thumb,
                 })
 
-        scored.sort(key=lambda x: (x['score'], len(x['matched_keywords'])), reverse=True)
+        scored.sort(key=lambda x: (x["score"], len(x["matched_keywords"])), reverse=True)
 
-        strategies = []
-        if search_vids:
-            strategies.append("채널 검색")
-        if global_vids:
-            strategies.append("글로벌 검색")
-        if playlist_vids:
-            strategies.append("업로드 목록")
+        strategy_parts = []
+        if source_channel_ids:
+            strategy_parts.append("출처채널(" + ",".join(source_mentions[:2]) + ")")
+        strategy_parts.append("쇼츠채널")
 
         return {
             "shorts_id": shorts_id,
@@ -378,25 +376,23 @@ async def analyze_shorts(req: AnalyzeRequest):
             "shorts_channel": channel_title,
             "shorts_channel_id": channel_id,
             "extracted_keywords": keywords,
+            "source_mentions": source_mentions,
             "candidates": scored[:req.max_candidates],
             "total_searched": len(all_videos),
-            "search_strategy": " + ".join(strategies) if strategies else "Search API",
+            "search_strategy": " + ".join(strategy_parts),
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("analyze_shorts 오류: " + traceback.format_exc())
+        logger.error("오류: " + traceback.format_exc())
         raise HTTPException(status_code=500, detail="%s: %s" % (type(e).__name__, str(e)))
 
 
-# ----------------------------------------
-# 헬스체크 + 정적 파일
-# ----------------------------------------
-
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "1.1.0"}
+    return {"status": "ok", "version": "2.0.0"}
+
 
 static_dir = Path(__file__).parent / "static"
 if static_dir.exists():
