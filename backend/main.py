@@ -377,7 +377,7 @@ async def search_channel_videos(channel_id: str, keywords: list[str], api_key: s
 # 메인 분석 엔드포인트
 # ─────────────────────────────────────────────
 
-@app.post("/api/analyze", response_model=AnalyzeResponse)
+@app.post("/api/analyze")
 async def analyze_shorts(req: AnalyzeRequest):
     """
     Shorts → 원본 영상 후보 탐색
@@ -386,90 +386,83 @@ async def analyze_shorts(req: AnalyzeRequest):
     2. 업로드 목록 전체 수집 후 로컬 키워드 매칭 - 검색 누락 보완
     두 결과를 합쳐서 점수 순 정렬
     """
-    # 1. Shorts ID 추출
-    shorts_id = extract_video_id(req.shorts_url)
-    if not shorts_id:
-        raise HTTPException(status_code=400, detail="유효하지 않은 YouTube URL입니다")
-
-    logger.info(f"분석 시작: {shorts_id}")
-
-    # 2. Shorts 메타데이터 조회
-    shorts_info = await get_video_info(shorts_id, req.api_key)
-    snippet = shorts_info.get('snippet', {})
-    channel_id = snippet.get('channelId', '')
-    channel_title = snippet.get('channelTitle', '')
-    shorts_title = snippet.get('title', '')
-    shorts_desc = snippet.get('description', '')
-    shorts_tags = snippet.get('tags', [])
-
-    logger.info(f"채널: {channel_title} ({channel_id})")
-
-    # 3. 키워드 추출
-    keywords = extract_keywords(shorts_title, shorts_desc, shorts_tags)
-    logger.info(f"추출된 키워드: {keywords}")
-
-    if not keywords:
-        raise HTTPException(status_code=400, detail="키워드를 추출할 수 없습니다. 제목/태그를 확인하세요.")
-
-    # 4. 채널 업로드 재생목록 ID 조회
     try:
-        uploads_playlist_id = await get_channel_uploads_playlist(channel_id, req.api_key)
-    except Exception as e:
-        logger.error(f"업로드 목록 조회 실패: {e}")
-        uploads_playlist_id = None
+        # 1. Shorts ID 추출
+        shorts_id = extract_video_id(req.shorts_url)
+        if not shorts_id:
+            raise HTTPException(status_code=400, detail="유효하지 않은 YouTube URL입니다")
 
-    # 5. 두 가지 방법으로 후보 수집 (병렬)
-    search_videos = []
-    playlist_videos = []
-    tasks = [search_channel_videos(channel_id, keywords, req.api_key)]
-    if uploads_playlist_id:
-        tasks.append(get_all_channel_videos(uploads_playlist_id, req.api_key))
+        logger.info(f"분석 시작: {shorts_id}")
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+        # 2. Shorts 메타데이터 조회
+        shorts_info = await get_video_info(shorts_id, req.api_key)
+        snippet = shorts_info.get('snippet', {})
+        channel_id = snippet.get('channelId', '')
+        channel_title = snippet.get('channelTitle', '')
+        shorts_title = snippet.get('title', '')
+        shorts_desc = snippet.get('description', '')
+        shorts_tags = snippet.get('tags', [])
 
-    if not isinstance(results[0], Exception):
-        search_videos = results[0]
-        logger.info(f"Search API 결과: {len(search_videos)}개")
-    if len(results) > 1 and not isinstance(results[1], Exception):
-        playlist_videos = results[1]
-        logger.info(f"업로드 목록: {len(playlist_videos)}개")
+        logger.info(f"채널: {channel_title} ({channel_id})")
 
-    # 6. 중복 제거 후 통합
-    all_videos = {}
-    for v in search_videos + playlist_videos:
-        vid = v.get('id') or v.get('snippet', {}).get('resourceId', {}).get('videoId', '')
-        if vid and vid != shorts_id:  # Shorts 자신 제외
-            all_videos[vid] = v
+        # 3. 키워드 추출
+        keywords = extract_keywords(shorts_title, shorts_desc, shorts_tags)
+        logger.info(f"추출된 키워드: {keywords}")
 
-    total_searched = len(all_videos)
-    logger.info(f"총 후보 풀: {total_searched}개")
+        if not keywords:
+            raise HTTPException(status_code=400, detail="키워드를 추출할 수 없습니다. 제목/태그를 확인하세요.")
 
-    # 7. 스코어링
-    scored = []
-    for vid_id, video in all_videos.items():
-        score, matched = score_video(video, keywords)
-        if score > 0 or matched:  # 매칭 있는 것만
-            confidence = get_confidence(score, len(matched))
-            snippet_v = video.get('snippet', {})
+        # 4. 채널 업로드 재생목록 ID 조회
+        try:
+            uploads_playlist_id = await get_channel_uploads_playlist(channel_id, req.api_key)
+        except Exception as e:
+            logger.error(f"업로드 목록 조회 실패: {e}")
+            uploads_playlist_id = None
 
-            # 썸네일
-            thumbnails = snippet_v.get('thumbnails', {})
-            thumb = (
-                thumbnails.get('medium', {}).get('url') or
-                thumbnails.get('default', {}).get('url') or
-                f"https://img.youtube.com/vi/{vid_id}/mqdefault.jpg"
-            )
+        # 5. 두 가지 방법으로 후보 수집 (병렬)
+        search_videos = []
+        playlist_videos = []
+        tasks = [search_channel_videos(channel_id, keywords, req.api_key)]
+        if uploads_playlist_id:
+            tasks.append(get_all_channel_videos(uploads_playlist_id, req.api_key))
 
-            scored.append(VideoCandidate(
-                video_id=vid_id,
-                title=snippet_v.get('title', ''),
-                url=f"https://www.youtube.com/watch?v={vid_id}",
-                published_at=snippet_v.get('publishedAt', '')[:10],
-                score=round(score, 3),
-                matched_keywords=matched,
-                confidence=confidence,
-                thumbnail=thumb,
-            ))
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # 8. 점수 + 매칭 키워드 수로 정렬
-    scored.sort(key=la
+        if not isinstance(results[0], Exception):
+            search_videos = results[0]
+            logger.info(f"Search API 결과: {len(search_videos)}개")
+        else:
+            logger.error(f"Search API 실패: {results[0]}")
+        if len(results) > 1 and not isinstance(results[1], Exception):
+            playlist_videos = results[1]
+            logger.info(f"업로드 목록: {len(playlist_videos)}개")
+        elif len(results) > 1:
+            logger.error(f"업로드 목록 실패: {results[1]}")
+
+        # 6. 중복 제거 후 통합
+        all_videos = {}
+        for v in search_videos + playlist_videos:
+            vid = v.get('id') or v.get('snippet', {}).get('resourceId', {}).get('videoId', '')
+            if vid and vid != shorts_id:
+                all_videos[vid] = v
+
+        total_searched = len(all_videos)
+        logger.info(f"총 후보 풀: {total_searched}개")
+
+        # 7. 스코어링
+        scored = []
+        for vid_id, video in all_videos.items():
+            score, matched = score_video(video, keywords)
+            if score > 0 or matched:
+                confidence = get_confidence(score, len(matched))
+                snippet_v = video.get('snippet', {})
+                thumbnails = snippet_v.get('thumbnails', {})
+                thumb = (
+                    thumbnails.get('medium', {}).get('url') or
+                    thumbnails.get('default', {}).get('url') or
+                    f"https://img.youtube.com/vi/{vid_id}/mqdefault.jpg"
+                )
+                scored.append(VideoCandidate(
+                    video_id=vid_id,
+                    title=snippet_v.get('title', ''),
+                    url=f"https://www.youtube.com
