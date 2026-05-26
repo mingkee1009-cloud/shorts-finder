@@ -337,15 +337,26 @@ async def analyze_shorts(req: AnalyzeRequest):
 
         # 6단계: 중복 제거 + 점수 계산
         all_videos = {}
+        source_video_ids = set()
         for v in all_vids_list:
             vid = v.get("id") or v.get("snippet", {}).get("resourceId", {}).get("videoId", "")
             if vid and vid != shorts_id:
                 all_videos[vid] = v
 
+        # 출처 채널 영상 ID 수집 (점수 무관하게 포함)
+        for v in all_vids_list:
+            vid = v.get("id") or v.get("snippet", {}).get("resourceId", {}).get("videoId", "")
+            sn_v = v.get("snippet", {})
+            ch_id = sn_v.get("channelId", "")
+            if vid and ch_id in source_channel_ids:
+                source_video_ids.add(vid)
+
         scored = []
         for vid_id, video in all_videos.items():
             score, matched = score_video(video, keywords)
-            if score > 0 or matched:
+            is_source = vid_id in source_video_ids
+            # 출처 채널 영상은 점수 0이어도 포함, 그 외는 점수 있어야 포함
+            if score > 0 or matched or is_source:
                 sn_v = video.get("snippet", {})
                 thumbs = sn_v.get("thumbnails", {})
                 thumb = (thumbs.get("medium", {}).get("url") or
@@ -361,9 +372,15 @@ async def analyze_shorts(req: AnalyzeRequest):
                     "matched_keywords": matched,
                     "confidence": get_confidence(score, len(matched)),
                     "thumbnail": thumb,
+                    "is_source_channel": is_source,
                 })
 
-        scored.sort(key=lambda x: (x["score"], len(x["matched_keywords"])), reverse=True)
+        # 출처 채널 영상 먼저, 그 다음 점수 순
+        scored.sort(key=lambda x: (
+            1 if x.get("is_source_channel") else 0,
+            x["score"],
+            len(x["matched_keywords"])
+        ), reverse=True)
 
         strategy_parts = []
         if source_channel_ids:

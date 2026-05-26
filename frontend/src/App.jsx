@@ -571,8 +571,11 @@ function Results({ result }) {
                 </RankNum>
                 <CandTitle>{c.title}</CandTitle>
                 {c.channel_title && (
-                  <span style={{ fontSize: 11, color: 'var(--text2)', marginBottom: 4, display: 'block' }}>
-                    📺 {c.channel_title}
+                  <span style={{ fontSize: 11, marginBottom: 4, display: 'block' }}>
+                    {c.is_source_channel && (
+                      <span style={{ background: '#e53e3e', color: '#fff', fontSize: 10, padding: '1px 5px', borderRadius: 3, marginRight: 5 }}>출처</span>
+                    )}
+                    <span style={{ color: 'var(--text2)' }}>📺 {c.channel_title}</span>
                   </span>
                 )}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
